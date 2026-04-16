@@ -17,6 +17,10 @@ from .ai_analyzer import AIAnalyzer
 from ..utils.logger import Logger
 from ..utils.config import Config
 
+from PIL import ImageGrab
+import numpy as np
+import cv2 as cv
+
 class AutoAttacker:
     """Automated continuous attack system"""
     
@@ -136,11 +140,122 @@ class AutoAttacker:
         finally:
             self.is_running = False
     
+    def collect_loot(self):
+        coords = self.coordinate_mapper.get_coordinates()
+
+        #scroll to reveal cart
+        pyautogui.moveTo(1288, 1301)
+        pyautogui.scroll(-100)
+        time.sleep(0.21)
+        pyautogui.scroll(-100)
+        time.sleep(0.29)
+        pyautogui.scroll(-100)
+        time.sleep(0.21)
+
+        pyautogui.moveTo(1571, 205)
+        pyautogui.dragTo(1167, 1235, duration=0.5)
+        time.sleep(0.22)
+
+        if 'loot_cart' not in coords:
+                self.logger.warning("Loot cart button not mapped, skipping loot collection")
+        else:
+            loot_cart_coord = self._get_cart_position()
+            self.logger.info(f"🔍 Checking for loot cart at ({loot_cart_coord[0]}, {loot_cart_coord[1]})")
+            pyautogui.click(loot_cart_coord[0], loot_cart_coord[1])
+            time.sleep(3)  # Wait for loot collection to complete
+        if 'collect_loot' in coords:
+            collect_coord = coords['collect_loot']
+            self.logger.info(f"Collecting loot at ({collect_coord['x']}, {collect_coord['y']})")
+            pyautogui.click(collect_coord['x'], collect_coord['y'])
+            time.sleep(3)  # Wait for loot collection to complete
+        if 'close_loot' in coords:
+            close_coord = coords['close_loot']
+            self.logger.info(f"Closing loot screen at ({close_coord['x']}, {close_coord['y']})")
+            pyautogui.click(close_coord['x'], close_coord['y'])
+            time.sleep(2)  # Wait for screen to close
+
+    def _check_phase1_ended(self, threshold: float = 128) -> bool:
+        coords = self.coordinate_mapper.get_coordinates()
+        tl = coords['top_left_od']
+        br = coords['bottom_right_od']
+        x1, y1 = tl['x'], tl['y']
+        x2, y2 = br['x'], br['y']
+        screenshot = ImageGrab.grab(bbox=(x1, y1, x2, y2))
+        pixels = np.array(screenshot)
+
+        brightness = (
+            0.33 * pixels[:, :, 0] +
+            0.33 * pixels[:, :, 1] +
+            0.33 * pixels[:, :, 2]
+        )
+
+        print(f"Phase 1 brightness sum: {int(np.sum(brightness >= threshold))}")
+        return int(np.sum(brightness >= threshold)) < 2000
+
+    def _check_attack_finished(self, threshold=128) -> bool:
+        coords = self.coordinate_mapper.get_coordinates()
+        tl = coords['top_left_ret']
+        br = coords['bottom_right_ret']
+        x1, y1 = tl['x'], tl['y']
+        x2, y2 = br['x'], br['y']
+        screenshot = ImageGrab.grab(bbox=(x1, y1, x2, y2))
+        pixels = np.array(screenshot)
+
+        brightness = (
+            0.33 * pixels[:, :, 0] +
+            0.33 * pixels[:, :, 1] +
+            0.33 * pixels[:, :, 2]
+        )
+        bright_pixels = int(np.sum(brightness >= threshold))
+        print(f"Attack button white pixels: {bright_pixels}")
+        
+        p = np.array(ImageGrab.grab(bbox=(x1, y1, x2, y2))).astype(float)
+
+        r, g, b = p[:, :, 0], p[:, :, 1], p[:, :, 2]
+
+        is_green = (
+            (g >= r * 1.4) &
+            (g >= b * 1.4) &
+            (g >= 80)
+        )
+
+        green_pixels = int(np.sum(is_green))
+        print(f"Green pixel count: {green_pixels}")
+        return bright_pixels > 29000 and bright_pixels<35000 and green_pixels > 18000
+    
+    def _get_cart_position(self) -> Tuple[int, int]:
+        """Use template matching to find loot cart position"""
+        coords = self.coordinate_mapper.get_coordinates()
+        print("AAAAAAAAAAAAAAAAAAA")
+        template = cv.imread('cart.png', cv.IMREAD_GRAYSCALE)
+        if template is None:
+            self.logger.error("Cart template image not found")
+            return(int(coords['loot_cart']['x']), int(coords['loot_cart']['y']))
+        
+        screenshot = np.array(ImageGrab.grab().convert('L'))
+        res = cv.matchTemplate(screenshot, template, cv.TM_SQDIFF_NORMED)
+
+        min_val, _, min_loc, _ = cv.minMaxLoc(res)
+        
+        if min_val < 0.5:  # Threshold for a good match
+            cart_x = min_loc[0] + template.shape[1] // 2
+            cart_y = min_loc[1] + template.shape[0] // 2
+            self.logger.info(f"Found loot cart at ({cart_x}, {cart_y}) with match value {min_val}")
+            return (cart_x, cart_y)
+        else:
+            self.logger.info(f"No good match for loot cart found (min_val={min_val}), using default coordinates")
+            return (coords['loot_cart']['x'], coords['loot_cart']['y'])
+
+
     def _execute_attack_sequence(self) -> bool:
         """Execute the complete attack sequence following your exact process"""
         try:
             coords = self.coordinate_mapper.get_coordinates()
-            
+
+            time.sleep(2)
+            # Step 0 .-. : collect loot cart
+            self.collect_loot()
+
             # Step 1: Click attack button
             if 'attack' not in coords:
                 self.logger.error("Attack button not mapped")
@@ -166,16 +281,77 @@ class AutoAttacker:
             
             self.logger.info("✅ Attack recording started - troops deploying...")
             
-            # Step 8: Wait 3 minutes for battle completion
-            self.logger.info("⏳ Waiting 3 minutes for battle completion...")
-            battle_wait_time = 180  # 3 minutes
-            
-            for remaining in range(battle_wait_time, 0, -10):
-                if not self.is_running:
+            saftey_counter = 0
+            # Step 8: wait for phase 1 to start and end
+            while saftey_counter < 60:  # Safety counter to prevent infinite loop
+                self.logger.info("Waiting for battle to start")
+                if not self._check_phase1_ended():
+                    self.logger.info("Phase 1 started")
                     break
-                self.logger.info(f"⏳ Battle in progress... {remaining//60}m {remaining%60}s remaining")
-                time.sleep(10)
-            
+                time.sleep(5)
+                saftey_counter += 1
+
+            saftey_counter = 0
+            while saftey_counter < 60:  # Safety counter to prevent infinite loop
+                self.logger.info("Waiting for battle to complete")
+                if self._check_phase1_ended():
+                    self.logger.info("Phase 1 done")
+                    break
+                time.sleep(5)
+                saftey_counter += 1
+
+
+            # check if there is a 2nd phase
+            time.sleep(5)
+            if not self._check_attack_finished():
+                self.logger.info("attacking 2nd base...")
+                pyautogui.moveTo(2037, 369)
+                time.sleep(0.2)
+                pyautogui.press('q')
+                time.sleep(0.2)
+                pyautogui.press('q')
+                time.sleep(0.2)
+                pyautogui.press('q')
+                time.sleep(0.2)
+                pyautogui.click(2037, 369)
+                time.sleep(0.2)
+                pyautogui.click(2037, 369)
+                time.sleep(0.2)
+                pyautogui.click(2037, 369)
+                time.sleep(0.2)
+                pyautogui.moveTo(1608, 1318)
+                time.sleep(0.1)
+                pyautogui.click(1608, 1318)
+                time.sleep(0.2)
+                pyautogui.moveTo(2037, 369)
+                time.sleep(0.2)
+                pyautogui.click(2037, 369)
+                time.sleep(0.2)
+                pyautogui.click(2037, 369)
+                time.sleep(0.2)
+                pyautogui.click(2037, 369)
+                time.sleep(0.2)
+                pyautogui.click(2037, 369)
+                time.sleep(0.2)
+                pyautogui.click(2037, 369)
+                time.sleep(0.2)
+                pyautogui.click(2037, 369)
+                time.sleep(0.2)
+                pyautogui.click(2037, 369)
+                time.sleep(0.2)
+                pyautogui.click(2037, 369)
+                time.sleep(0.2)
+                pyautogui.click(2037, 369)
+
+
+            saftey_counter = 0
+            while saftey_counter < 60:  # Safety counter to prevent infinite loop
+                self.logger.info("Waiting for battle to complete")
+                if self._check_attack_finished():
+                    self.logger.info("✅ Battle appears to be finished")
+                    break
+                time.sleep(5)  # Check every 5 seconds
+                saftey_counter += 1
             # Step 9: Return home
             self._return_home()
             
@@ -227,7 +403,7 @@ class AutoAttacker:
                 decision_to_attack = self._check_loot_with_ai(screenshot_path)
             else:
                 self.logger.info("4️⃣ Performing simple loot check (AI Disabled)...")
-                decision_to_attack = self._check_loot()
+                decision_to_attack = True #self._check_loot()
 
             if decision_to_attack:
                 self.logger.info("✅ Base is good! Proceeding with attack!")
