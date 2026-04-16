@@ -1,5 +1,6 @@
 # COC Attack Bot
 
+This fork was created to work with the night-village. It automatically collects the lootcart and changes the state mashine slightly. I do not recommend looking at the code its all horrible and everyone involved in the project should be ashamed of themselves for writing it. Following this sentence is the original README, although I cannot ensure that it is up to date with my fork since I cba to read and correct it.
 A Windows automation bot for Clash of Clans that can record attack sessions and replay them automatically with AI-powered base analysis.
 
 ## ⚠️ Disclaimer
